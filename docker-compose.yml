@@ -1,0 +1,25 @@
+version: "3.9"
+services:
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: app
+      POSTGRES_DB: ava_sales
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  api:
+    build: .
+    depends_on:
+      - postgres
+    environment:
+      DATABASE_URL: postgres://app:app@postgres:5432/ava_sales?sslmode=disable
+      PORT: 8080
+    ports:
+      - "8080:8080"
+
+volumes:
+  pgdata:
