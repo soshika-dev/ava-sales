@@ -1,0 +1,2 @@
+DROP TYPE IF EXISTS ticket_status;
+DROP EXTENSION IF EXISTS pgcrypto;
