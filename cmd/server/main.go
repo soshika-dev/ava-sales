@@ -32,8 +32,9 @@ func main() {
 	store := repository.NewStore(pool)
 	ticketService := service.NewTicketService(store)
 	agencyService := service.NewAgencyService(store)
+	authService := service.NewAuthService(store, cfg.JWTSecret, cfg.AccessTokenTTLMinutes, cfg.RefreshTokenTTLDays)
 
-	router := handlers.NewRouter(ticketService, agencyService, store, cfg.JWTSecret)
+	router := handlers.NewRouter(ticketService, agencyService, authService, store, cfg.JWTSecret)
 	server := &http.Server{
 		Addr:              ":" + cfg.Port,
 		Handler:           router,

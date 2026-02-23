@@ -17,6 +17,7 @@ import (
 type Handler struct {
 	ticketService *service.TicketService
 	agencyService *service.AgencyService
+	authService   *service.AuthService
 }
 
 type createTicketRequest struct {

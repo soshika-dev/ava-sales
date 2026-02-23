@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"ava-sales/internal/models"
 	"github.com/google/uuid"
@@ -36,18 +37,30 @@ func (r *postgresRepository) NextTicketNumber(ctx context.Context) (string, erro
 func (r *postgresRepository) GetAppUserByID(ctx context.Context, userID uuid.UUID) (*models.AppUser, error) {
 	var user models.AppUser
 	var role string
+	var email sql.NullString
+	var username sql.NullString
+	var passwordHash sql.NullString
 	var customerID pgtype.UUID
 	var technicianID pgtype.UUID
 
 	err := r.db.QueryRow(ctx, `
-		SELECT id, role, customer_id, technician_id, is_active
+		SELECT id, email, username, password_hash, role, customer_id, technician_id, is_active
 		FROM app_users
 		WHERE id = $1
-	`, userID).Scan(&user.ID, &role, &customerID, &technicianID, &user.IsActive)
+	`, userID).Scan(&user.ID, &email, &username, &passwordHash, &role, &customerID, &technicianID, &user.IsActive)
 	if err != nil {
 		return nil, mapDBError(err)
 	}
 
+	if email.Valid {
+		user.Email = email.String
+	}
+	if passwordHash.Valid {
+		user.PasswordHash = passwordHash.String
+	}
+	if username.Valid {
+		user.Username = &username.String
+	}
 	user.Role = models.ActorRole(role)
 	if customerID.Valid {
 		v, parseErr := uuid.FromBytes(customerID.Bytes[:])
@@ -62,6 +75,87 @@ func (r *postgresRepository) GetAppUserByID(ctx context.Context, userID uuid.UUI
 		}
 	}
 	return &user, nil
+}
+
+func (r *postgresRepository) GetAppUserByEmailOrUsername(ctx context.Context, identity string) (*models.AppUser, error) {
+	var user models.AppUser
+	var role string
+	var email sql.NullString
+	var username sql.NullString
+	var passwordHash sql.NullString
+	var customerID pgtype.UUID
+	var technicianID pgtype.UUID
+
+	err := r.db.QueryRow(ctx, `
+		SELECT id, email, username, password_hash, role, customer_id, technician_id, is_active
+		FROM app_users
+		WHERE lower(email) = lower($1) OR lower(username) = lower($1)
+		LIMIT 1
+	`, identity).Scan(&user.ID, &email, &username, &passwordHash, &role, &customerID, &technicianID, &user.IsActive)
+	if err != nil {
+		return nil, mapDBError(err)
+	}
+
+	if email.Valid {
+		user.Email = email.String
+	}
+	if passwordHash.Valid {
+		user.PasswordHash = passwordHash.String
+	}
+	if username.Valid {
+		user.Username = &username.String
+	}
+	user.Role = models.ActorRole(role)
+	if customerID.Valid {
+		v, parseErr := uuid.FromBytes(customerID.Bytes[:])
+		if parseErr == nil {
+			user.CustomerID = &v
+		}
+	}
+	if technicianID.Valid {
+		v, parseErr := uuid.FromBytes(technicianID.Bytes[:])
+		if parseErr == nil {
+			user.TechnicianID = &v
+		}
+	}
+	return &user, nil
+}
+
+func (r *postgresRepository) CreateRefreshToken(ctx context.Context, token *models.RefreshToken) error {
+	_, err := r.db.Exec(ctx, `
+		INSERT INTO refresh_tokens (id, user_id, token_hash, expires_at, revoked_at)
+		VALUES ($1,$2,$3,$4,$5)
+	`, token.ID, token.UserID, token.TokenHash, token.ExpiresAt, token.RevokedAt)
+	return mapDBError(err)
+}
+
+func (r *postgresRepository) GetRefreshTokenByHash(ctx context.Context, tokenHash string) (*models.RefreshToken, error) {
+	var rt models.RefreshToken
+	var revokedAt sql.NullTime
+	err := r.db.QueryRow(ctx, `
+		SELECT id, user_id, token_hash, expires_at, revoked_at, created_at, updated_at
+		FROM refresh_tokens
+		WHERE token_hash = $1
+		LIMIT 1
+	`, tokenHash).Scan(&rt.ID, &rt.UserID, &rt.TokenHash, &rt.ExpiresAt, &revokedAt, &rt.CreatedAt, &rt.UpdatedAt)
+	if err != nil {
+		return nil, mapDBError(err)
+	}
+	if revokedAt.Valid {
+		t := revokedAt.Time
+		rt.RevokedAt = &t
+	}
+	return &rt, nil
+}
+
+func (r *postgresRepository) RevokeRefreshToken(ctx context.Context, tokenID uuid.UUID) error {
+	now := time.Now().UTC()
+	_, err := r.db.Exec(ctx, `
+		UPDATE refresh_tokens
+		SET revoked_at = $1
+		WHERE id = $2 AND revoked_at IS NULL
+	`, now, tokenID)
+	return mapDBError(err)
 }
 
 func (r *postgresRepository) CreateTicket(ctx context.Context, ticket *models.Ticket) error {

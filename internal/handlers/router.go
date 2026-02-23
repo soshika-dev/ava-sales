@@ -7,15 +7,16 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func NewRouter(ticketSvc *service.TicketService, agencySvc *service.AgencyService, tx repository.TxManager, jwtSecret string) *gin.Engine {
+func NewRouter(ticketSvc *service.TicketService, agencySvc *service.AgencyService, authSvc *service.AuthService, tx repository.TxManager, jwtSecret string) *gin.Engine {
 	r := gin.New()
 	r.Use(gin.Recovery())
 	r.Use(middleware.RequestID(), middleware.RequestLogger())
 
-	h := &Handler{ticketService: ticketSvc, agencyService: agencySvc}
+	h := &Handler{ticketService: ticketSvc, agencyService: agencySvc, authService: authSvc}
 
 	api := r.Group("/api")
 	{
+		h.registerAuthRoutes(api, tx, jwtSecret)
 		api.GET("/agencies", h.ListAgencies)
 
 		customer := api.Group("/tickets")
