@@ -32,6 +32,7 @@ type TechTicketFilter struct {
 
 type Repository interface {
 	NextTicketNumber(ctx context.Context) (string, error)
+	GetAppUserByID(ctx context.Context, userID uuid.UUID) (*models.AppUser, error)
 
 	CreateTicket(ctx context.Context, ticket *models.Ticket) error
 	GetTicketByID(ctx context.Context, ticketID uuid.UUID) (*models.Ticket, error)

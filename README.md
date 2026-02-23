@@ -13,25 +13,18 @@ Go + Gin + PostgreSQL backend for customer support tickets with clean layering:
 - pgx/pgxpool
 - PostgreSQL
 - Goose migrations
+- JWT auth (`Authorization: Bearer <token>`)
 
-## Project Structure
+## Security change
 
-- `cmd/server/main.go`
-- `internal/config`
-- `internal/db`
-- `internal/models`
-- `internal/middleware`
-- `internal/repository`
-- `internal/service`
-- `internal/handlers`
-- `migrations`
+`X-Customer-Id` and `X-Technician-Id` are **not trusted**.
+Identity is taken from JWT `sub`, then server resolves user role/customer/technician IDs from `app_users`.
 
 ## Environment Variables
 
 - `PORT` (default `8080`)
 - `DATABASE_URL` (required)
-
-Example:
+- `JWT_SECRET` (required)
 
 ```bash
 cp .env.example .env
@@ -57,17 +50,25 @@ Run migrations:
 goose -dir migrations postgres "$DATABASE_URL" up
 ```
 
-Rollback last migration:
-
-```bash
-goose -dir migrations postgres "$DATABASE_URL" down
-```
-
 ## Run Server
 
 ```bash
 go run ./cmd/server
 ```
+
+## Dev JWTs
+
+`004_create_app_users.sql` seeds these users:
+
+- customer user id: `11111111-1111-1111-1111-111111111111`
+- technician user id: `22222222-2222-2222-2222-222222222222`
+- admin user id: `33333333-3333-3333-3333-333333333333`
+
+Create token (example using [jwt.io](https://jwt.io)):
+
+- Header: `{ "alg": "HS256", "typ": "JWT" }`
+- Payload: `{ "sub": "11111111-1111-1111-1111-111111111111", "exp": 1924992000 }`
+- Sign with `JWT_SECRET`
 
 ## API Error Format
 
@@ -83,34 +84,18 @@ go run ./cmd/server
 
 ## Example cURL
 
-### Agencies
+### Agencies (public)
 
 ```bash
 curl -X GET "http://localhost:8080/api/agencies?city=Bandung&province=West%20Java&q=service&page=1&page_size=20"
 ```
 
-### Customer tickets
-
-List customer tickets:
-
-```bash
-curl -X GET "http://localhost:8080/api/tickets?status=NEW&page=1&page_size=20" \
-  -H "X-Customer-Id: aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
-```
-
-Get ticket detail:
-
-```bash
-curl -X GET "http://localhost:8080/api/tickets/<ticket-id>" \
-  -H "X-Customer-Id: aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
-```
-
-Create ticket:
+### Customer tickets (JWT required)
 
 ```bash
 curl -X POST "http://localhost:8080/api/tickets" \
+  -H "Authorization: Bearer <customer_jwt>" \
   -H "Content-Type: application/json" \
-  -H "X-Customer-Id: aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa" \
   -d '{
     "device_serial":"SN-001-XYZ",
     "subject":"Device not booting",
@@ -119,65 +104,19 @@ curl -X POST "http://localhost:8080/api/tickets" \
   }'
 ```
 
-Add attachment:
-
 ```bash
-curl -X POST "http://localhost:8080/api/tickets/<ticket-id>/attachments" \
-  -H "Content-Type: application/json" \
-  -H "X-Customer-Id: aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa" \
-  -d '{
-    "file_type":"IMAGE",
-    "file_url":"https://cdn.example.com/ticket/attachment-1.jpg"
-  }'
+curl -X GET "http://localhost:8080/api/tickets?page=1&page_size=20" \
+  -H "Authorization: Bearer <customer_jwt>"
 ```
 
-Add feedback:
-
-```bash
-curl -X POST "http://localhost:8080/api/tickets/<ticket-id>/feedback" \
-  -H "Content-Type: application/json" \
-  -H "X-Customer-Id: aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa" \
-  -d '{
-    "score":5,
-    "solved":true,
-    "comment":"Issue fixed quickly"
-  }'
-```
-
-### Technician tickets
-
-List technician tickets:
-
-```bash
-curl -X GET "http://localhost:8080/api/tech/tickets?status=IN_REVIEW&assigned=true&page=1&page_size=20" \
-  -H "X-Technician-Id: bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
-```
-
-Patch ticket:
+### Technician tickets (JWT required)
 
 ```bash
 curl -X PATCH "http://localhost:8080/api/tech/tickets/<ticket-id>" \
+  -H "Authorization: Bearer <tech_jwt>" \
   -H "Content-Type: application/json" \
-  -H "X-Technician-Id: bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb" \
-  -H "X-Actor-Role: TECHNICIAN" \
-  -H "X-Actor-Id: bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb" \
   -d '{
     "status":"RESOLVED",
     "close_reason":"Replaced faulty cable"
   }'
 ```
-
-Add technician comment:
-
-```bash
-curl -X POST "http://localhost:8080/api/tech/tickets/<ticket-id>/comment" \
-  -H "Content-Type: application/json" \
-  -H "X-Technician-Id: bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb" \
-  -d '{"message":"Waiting for vendor confirmation"}'
-```
-
-## Notes
-
-- `ticket_number` is generated using `ticket_number_seq` and formatted as `TK-#####`.
-- Feedback is allowed only when ticket status is `RESOLVED` or `REJECTED`.
-- Ticket writes that involve event creation are wrapped in DB transactions.

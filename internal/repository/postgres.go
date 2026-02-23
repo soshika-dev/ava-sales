@@ -33,6 +33,37 @@ func (r *postgresRepository) NextTicketNumber(ctx context.Context) (string, erro
 	return ticketNumber, nil
 }
 
+func (r *postgresRepository) GetAppUserByID(ctx context.Context, userID uuid.UUID) (*models.AppUser, error) {
+	var user models.AppUser
+	var role string
+	var customerID pgtype.UUID
+	var technicianID pgtype.UUID
+
+	err := r.db.QueryRow(ctx, `
+		SELECT id, role, customer_id, technician_id, is_active
+		FROM app_users
+		WHERE id = $1
+	`, userID).Scan(&user.ID, &role, &customerID, &technicianID, &user.IsActive)
+	if err != nil {
+		return nil, mapDBError(err)
+	}
+
+	user.Role = models.ActorRole(role)
+	if customerID.Valid {
+		v, parseErr := uuid.FromBytes(customerID.Bytes[:])
+		if parseErr == nil {
+			user.CustomerID = &v
+		}
+	}
+	if technicianID.Valid {
+		v, parseErr := uuid.FromBytes(technicianID.Bytes[:])
+		if parseErr == nil {
+			user.TechnicianID = &v
+		}
+	}
+	return &user, nil
+}
+
 func (r *postgresRepository) CreateTicket(ctx context.Context, ticket *models.Ticket) error {
 	_, err := r.db.Exec(ctx, `
 		INSERT INTO tickets (

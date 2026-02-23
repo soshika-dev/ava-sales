@@ -9,6 +9,7 @@ import (
 	"ava-sales/internal/models"
 	"ava-sales/internal/repository"
 	"ava-sales/internal/service"
+
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
@@ -73,11 +74,12 @@ func (h *Handler) ListAgencies(c *gin.Context) {
 }
 
 func (h *Handler) ListCustomerTickets(c *gin.Context) {
-	customerID, err := middleware.ParseCustomerID(c)
+	actor, err := middleware.GetActor(c)
 	if err != nil {
 		writeError(c, err)
 		return
 	}
+	customerID := *actor.CustomerID
 	page, pageSize, pageErr := parsePagination(c)
 	if pageErr != nil {
 		writeError(c, pageErr)
@@ -103,11 +105,12 @@ func (h *Handler) ListCustomerTickets(c *gin.Context) {
 }
 
 func (h *Handler) GetCustomerTicket(c *gin.Context) {
-	customerID, err := middleware.ParseCustomerID(c)
+	actor, err := middleware.GetActor(c)
 	if err != nil {
 		writeError(c, err)
 		return
 	}
+	customerID := *actor.CustomerID
 	ticketID, parseErr := uuid.Parse(c.Param("id"))
 	if parseErr != nil {
 		writeError(c, models.NewAPIError("VALIDATION_ERROR", "invalid ticket id", http.StatusBadRequest, nil))
@@ -123,11 +126,12 @@ func (h *Handler) GetCustomerTicket(c *gin.Context) {
 }
 
 func (h *Handler) CreateCustomerTicket(c *gin.Context) {
-	customerID, err := middleware.ParseCustomerID(c)
+	actor, err := middleware.GetActor(c)
 	if err != nil {
 		writeError(c, err)
 		return
 	}
+	customerID := *actor.CustomerID
 
 	var req createTicketRequest
 	if bindErr := c.ShouldBindJSON(&req); bindErr != nil {
@@ -150,11 +154,12 @@ func (h *Handler) CreateCustomerTicket(c *gin.Context) {
 }
 
 func (h *Handler) AddCustomerAttachment(c *gin.Context) {
-	customerID, err := middleware.ParseCustomerID(c)
+	actor, err := middleware.GetActor(c)
 	if err != nil {
 		writeError(c, err)
 		return
 	}
+	customerID := *actor.CustomerID
 	ticketID, parseErr := uuid.Parse(c.Param("id"))
 	if parseErr != nil {
 		writeError(c, models.NewAPIError("VALIDATION_ERROR", "invalid ticket id", http.StatusBadRequest, nil))
@@ -181,11 +186,12 @@ func (h *Handler) AddCustomerAttachment(c *gin.Context) {
 }
 
 func (h *Handler) CreateCustomerFeedback(c *gin.Context) {
-	customerID, err := middleware.ParseCustomerID(c)
+	actor, err := middleware.GetActor(c)
 	if err != nil {
 		writeError(c, err)
 		return
 	}
+	customerID := *actor.CustomerID
 	ticketID, parseErr := uuid.Parse(c.Param("id"))
 	if parseErr != nil {
 		writeError(c, models.NewAPIError("VALIDATION_ERROR", "invalid ticket id", http.StatusBadRequest, nil))
@@ -213,10 +219,14 @@ func (h *Handler) CreateCustomerFeedback(c *gin.Context) {
 }
 
 func (h *Handler) ListTechTickets(c *gin.Context) {
-	techID, err := middleware.ParseTechnicianID(c)
+	actor, err := middleware.GetActor(c)
 	if err != nil {
 		writeError(c, err)
 		return
+	}
+	techID := uuid.Nil
+	if actor.TechnicianID != nil {
+		techID = *actor.TechnicianID
 	}
 	page, pageSize, pageErr := parsePagination(c)
 	if pageErr != nil {
@@ -243,6 +253,10 @@ func (h *Handler) ListTechTickets(c *gin.Context) {
 		}
 		assigned = parsed
 	}
+	if assigned && actor.TechnicianID == nil {
+		writeError(c, models.NewAPIError("VALIDATION_ERROR", "assigned=true requires a technician identity", http.StatusBadRequest, nil))
+		return
+	}
 
 	items, meta, svcErr := h.ticketService.ListTechTickets(c.Request.Context(), techID, status, assigned, page, pageSize)
 	if svcErr != nil {
@@ -253,11 +267,15 @@ func (h *Handler) ListTechTickets(c *gin.Context) {
 }
 
 func (h *Handler) PatchTechTicket(c *gin.Context) {
-	techID, err := middleware.ParseTechnicianID(c)
+	actor, err := middleware.GetActor(c)
 	if err != nil {
 		writeError(c, err)
 		return
 	}
+	//techID := uuid.Nil
+	//if actor.TechnicianID != nil {
+	//	techID = *actor.TechnicianID
+	//}
 	ticketID, parseErr := uuid.Parse(c.Param("id"))
 	if parseErr != nil {
 		writeError(c, models.NewAPIError("VALIDATION_ERROR", "invalid ticket id", http.StatusBadRequest, nil))
@@ -285,16 +303,6 @@ func (h *Handler) PatchTechTicket(c *gin.Context) {
 		assignedTechID = &id
 	}
 
-	actor, actorErr := middleware.ParseActor(c, models.RoleTechnician, techID)
-	if actorErr != nil {
-		writeError(c, actorErr)
-		return
-	}
-	if actor.Role != models.RoleTechnician && actor.Role != models.RoleAdmin {
-		writeError(c, models.ErrForbidden)
-		return
-	}
-
 	updated, svcErr := h.ticketService.PatchTechTicket(c.Request.Context(), ticketID, service.PatchTicketInput{
 		Status:               status,
 		AssignedTechnicianID: assignedTechID,
@@ -309,9 +317,21 @@ func (h *Handler) PatchTechTicket(c *gin.Context) {
 }
 
 func (h *Handler) AddTechComment(c *gin.Context) {
-	techID, err := middleware.ParseTechnicianID(c)
+	actor, err := middleware.GetActor(c)
 	if err != nil {
 		writeError(c, err)
+		return
+	}
+	if actor.Role != models.RoleTechnician {
+		writeError(c, models.ErrForbidden)
+		return
+	}
+	techID := uuid.Nil
+	if actor.TechnicianID != nil {
+		techID = *actor.TechnicianID
+	}
+	if techID == uuid.Nil {
+		writeError(c, models.ErrForbidden)
 		return
 	}
 	ticketID, parseErr := uuid.Parse(c.Param("id"))

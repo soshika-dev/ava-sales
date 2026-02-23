@@ -33,7 +33,7 @@ func main() {
 	ticketService := service.NewTicketService(store)
 	agencyService := service.NewAgencyService(store)
 
-	router := handlers.NewRouter(ticketService, agencyService)
+	router := handlers.NewRouter(ticketService, agencyService, store, cfg.JWTSecret)
 	server := &http.Server{
 		Addr:              ":" + cfg.Port,
 		Handler:           router,

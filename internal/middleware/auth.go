@@ -2,76 +2,128 @@ package middleware
 
 import (
 	"net/http"
+	"strings"
 
 	"ava-sales/internal/models"
+	"ava-sales/internal/repository"
 	"github.com/gin-gonic/gin"
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 )
 
-func ParseCustomerID(c *gin.Context) (uuid.UUID, *models.APIError) {
-	raw := c.GetHeader("X-Customer-Id")
-	if raw == "" {
-		return uuid.Nil, models.NewAPIError("UNAUTHORIZED", "X-Customer-Id header is required", http.StatusUnauthorized, nil)
-	}
-	id, err := uuid.Parse(raw)
-	if err != nil {
-		return uuid.Nil, models.NewAPIError("VALIDATION_ERROR", "X-Customer-Id must be a valid UUID", http.StatusBadRequest, nil)
-	}
-	return id, nil
+const AuthActorKey = "auth_actor"
+
+type JWTClaims struct {
+	jwt.RegisteredClaims
 }
 
-func ParseTechnicianID(c *gin.Context) (uuid.UUID, *models.APIError) {
-	raw := c.GetHeader("X-Technician-Id")
-	if raw == "" {
-		return uuid.Nil, models.NewAPIError("UNAUTHORIZED", "X-Technician-Id header is required", http.StatusUnauthorized, nil)
+func JWTAuth(tx repository.TxManager, secret string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		authHeader := strings.TrimSpace(c.GetHeader("Authorization"))
+		if authHeader == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": models.NewAPIError("UNAUTHORIZED", "Authorization header is required", http.StatusUnauthorized, nil)})
+			c.Abort()
+			return
+		}
+		parts := strings.SplitN(authHeader, " ", 2)
+		if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") || strings.TrimSpace(parts[1]) == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": models.NewAPIError("UNAUTHORIZED", "Authorization must be Bearer token", http.StatusUnauthorized, nil)})
+			c.Abort()
+			return
+		}
+
+		claims := &JWTClaims{}
+		token, err := jwt.ParseWithClaims(parts[1], claims, func(token *jwt.Token) (any, error) {
+			return []byte(secret), nil
+		}, jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}))
+		if err != nil || !token.Valid {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": models.NewAPIError("UNAUTHORIZED", "invalid token", http.StatusUnauthorized, nil)})
+			c.Abort()
+			return
+		}
+		if strings.TrimSpace(claims.Subject) == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": models.NewAPIError("UNAUTHORIZED", "token subject (sub) is required", http.StatusUnauthorized, nil)})
+			c.Abort()
+			return
+		}
+
+		userID, parseErr := uuid.Parse(claims.Subject)
+		if parseErr != nil {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": models.NewAPIError("UNAUTHORIZED", "token sub must be UUID", http.StatusUnauthorized, nil)})
+			c.Abort()
+			return
+		}
+
+		user, repoErr := tx.Repo().GetAppUserByID(c.Request.Context(), userID)
+		if repoErr != nil {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": models.NewAPIError("UNAUTHORIZED", "user not found", http.StatusUnauthorized, nil)})
+			c.Abort()
+			return
+		}
+		if !user.IsActive {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": models.NewAPIError("UNAUTHORIZED", "user is inactive", http.StatusUnauthorized, nil)})
+			c.Abort()
+			return
+		}
+
+		actor := models.Actor{
+			Role:         user.Role,
+			ActorID:      user.ID,
+			CustomerID:   user.CustomerID,
+			TechnicianID: user.TechnicianID,
+		}
+		c.Set(AuthActorKey, actor)
+		c.Next()
 	}
-	id, err := uuid.Parse(raw)
-	if err != nil {
-		return uuid.Nil, models.NewAPIError("VALIDATION_ERROR", "X-Technician-Id must be a valid UUID", http.StatusBadRequest, nil)
-	}
-	return id, nil
 }
 
-func ParseActor(c *gin.Context, fallbackRole models.ActorRole, fallbackID uuid.UUID) (models.Actor, *models.APIError) {
-	role := fallbackRole
-	actorID := fallbackID
-
-	if rawRole := c.GetHeader("X-Actor-Role"); rawRole != "" {
-		role = models.ActorRole(rawRole)
-		if role != models.RoleCustomer && role != models.RoleTechnician && role != models.RoleAdmin {
-			return models.Actor{}, models.NewAPIError("VALIDATION_ERROR", "X-Actor-Role must be CUSTOMER, TECHNICIAN, or ADMIN", http.StatusBadRequest, nil)
-		}
+func GetActor(c *gin.Context) (models.Actor, *models.APIError) {
+	v, ok := c.Get(AuthActorKey)
+	if !ok {
+		return models.Actor{}, models.NewAPIError("UNAUTHORIZED", "authentication context missing", http.StatusUnauthorized, nil)
 	}
-	if rawActorID := c.GetHeader("X-Actor-Id"); rawActorID != "" {
-		id, err := uuid.Parse(rawActorID)
+	actor, ok := v.(models.Actor)
+	if !ok {
+		return models.Actor{}, models.NewAPIError("UNAUTHORIZED", "invalid authentication context", http.StatusUnauthorized, nil)
+	}
+	return actor, nil
+}
+
+func RequireCustomer() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		actor, err := GetActor(c)
 		if err != nil {
-			return models.Actor{}, models.NewAPIError("VALIDATION_ERROR", "X-Actor-Id must be a valid UUID", http.StatusBadRequest, nil)
+			c.JSON(err.HTTPStatus, gin.H{"error": err})
+			c.Abort()
+			return
 		}
-		actorID = id
+		if actor.Role != models.RoleCustomer || actor.CustomerID == nil {
+			c.JSON(http.StatusForbidden, gin.H{"error": models.ErrForbidden})
+			c.Abort()
+			return
+		}
+		c.Next()
 	}
+}
 
-	var customerID *uuid.UUID
-	if raw := c.GetHeader("X-Customer-Id"); raw != "" {
-		id, err := uuid.Parse(raw)
+func RequireTechOrAdmin() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		actor, err := GetActor(c)
 		if err != nil {
-			return models.Actor{}, models.NewAPIError("VALIDATION_ERROR", "X-Customer-Id must be a valid UUID", http.StatusBadRequest, nil)
+			c.JSON(err.HTTPStatus, gin.H{"error": err})
+			c.Abort()
+			return
 		}
-		customerID = &id
-	}
-
-	var techID *uuid.UUID
-	if raw := c.GetHeader("X-Technician-Id"); raw != "" {
-		id, err := uuid.Parse(raw)
-		if err != nil {
-			return models.Actor{}, models.NewAPIError("VALIDATION_ERROR", "X-Technician-Id must be a valid UUID", http.StatusBadRequest, nil)
+		if actor.Role != models.RoleTechnician && actor.Role != models.RoleAdmin {
+			c.JSON(http.StatusForbidden, gin.H{"error": models.ErrForbidden})
+			c.Abort()
+			return
 		}
-		techID = &id
+		if actor.Role == models.RoleTechnician && actor.TechnicianID == nil {
+			c.JSON(http.StatusForbidden, gin.H{"error": models.ErrForbidden})
+			c.Abort()
+			return
+		}
+		c.Next()
 	}
-
-	return models.Actor{
-		Role:         role,
-		ActorID:      actorID,
-		CustomerID:   customerID,
-		TechnicianID: techID,
-	}, nil
 }
